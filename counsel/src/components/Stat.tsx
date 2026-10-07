@@ -1,33 +1,39 @@
+import type { ReactNode } from 'react';
 export function Stat({
   label,
   value,
   detail,
-  icon,
-  tone,
   progress,
+  tip,
 }: {
   label: string;
-  value: string;
-  detail: string;
-  icon: React.ReactNode;
-  tone?: string;
+  tip?: string;
+  value: ReactNode;
+  detail?: ReactNode;
   progress?: number;
 }) {
   return (
-    <article className={`stat-card ${tone ?? ''}`}>
+    <article className="stat-card">
       <div className="stat-label">
-        {label}
-        <span>{icon}</span>
-      </div>
-      <div className="stat-value">{value}</div>
-      <div className="stat-detail">
-        {detail}
-        {progress !== undefined && (
-          <span className="mini-progress">
-            <i style={{ width: `${progress}%` }} />
+        {tip ? (
+          <span className="has-tip" tabIndex={0} data-tip={tip}>
+            {label}
           </span>
+        ) : (
+          label
         )}
       </div>
+      <div className="stat-value">{value}</div>
+      {progress !== undefined ? (
+        <div className="stat-progress">
+          <span className="meter">
+            <i style={{ width: `${progress}%` }} />
+          </span>
+          <strong>{progress}%</strong>
+        </div>
+      ) : (
+        detail && <div className="stat-detail">{detail}</div>
+      )}
     </article>
   );
 }

@@ -2,7 +2,7 @@
 
 A local workspace for law-firm time tracking and weekly billing review.
 
-Start with [the handover brief](ASSESSMENT.md). This repository represents an existing product in a fictional customer pilot. All names and records are fictional. Some workflows are unfinished; the reports in the brief are the starting point for your investigation.
+Start with [the handover brief](ASSESSMENT.md). Every ask in it is indexed, with status, in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md). This repository represents an existing product in a fictional customer pilot. All names and records are fictional. Some workflows are unfinished; the reports in the brief are the starting point for your investigation.
 
 ## Run locally
 
@@ -42,7 +42,8 @@ Browser tests start their own server on port 5177; leave that port free. The mob
 
 - `src/App.tsx`: workspace, navigation, forms, and data management.
 - `src/components/ReviewPage.tsx`: weekly review, selection, actions, and export.
-- `src/review.ts`: review queries and entry operations.
+- `src/review.ts`: review queries, entry operations, re-review rules and conflict-safe undo.
+- `src/useTheme.ts`: light/dark theme (system default, remembered choice).
 - `src/model.ts`: data types, validation, dates, totals, and CSV.
 - `src/useStore.ts`: browser persistence and storage events.
 - `src/fixtures/pilot-workspace.json`: restorable fictional pilot workspace.

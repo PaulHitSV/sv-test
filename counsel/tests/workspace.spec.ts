@@ -3,7 +3,7 @@ test('create, persist, edit, filter, export, delete and undo an entry', async ({
   page,
 }) => {
   await page.goto('/');
-  await expect(page.getByText('Great work deserves a record.')).toBeVisible();
+  await expect(page.getByText('No time logged yet.')).toBeVisible();
   await page.getByRole('button', { name: 'Log time', exact: true }).click();
   await page.getByLabel('New client name').fill('Test Legal Client');
   await page.getByLabel('Hours', { exact: true }).fill('1');
@@ -32,13 +32,11 @@ test('create, persist, edit, filter, export, delete and undo an entry', async ({
   await expect(
     page.getByRole('cell', { name: 'Non-billable', exact: true }),
   ).toBeVisible();
-  await page
-    .getByRole('combobox', { name: 'Filter by billability' })
-    .selectOption('billable');
-  await expect(page.getByText('A little breathing room.')).toBeVisible();
-  await page
-    .getByRole('combobox', { name: 'Filter by billability' })
-    .selectOption('all');
+  await page.getByRole('combobox', { name: 'Filter by billability' }).click();
+  await page.getByRole('option', { name: 'Billable', exact: true }).click();
+  await expect(page.getByText('No entries in this view.')).toBeVisible();
+  await page.getByRole('combobox', { name: 'Filter by billability' }).click();
+  await page.getByRole('option', { name: 'All billability' }).click();
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export CSV' }).click();
   expect((await download).suggestedFilename()).toMatch(/counsel-time.*\.csv/);
@@ -80,7 +78,7 @@ test('sample data, search, week navigation and keyboard dialog dismissal', async
   await expect(page.locator('tbody tr')).toHaveCount(1);
   await page.getByRole('button', { name: 'Clear search' }).click();
   await page.getByRole('button', { name: 'Previous week' }).click();
-  await expect(page.getByText('A little breathing room.')).toBeVisible();
+  await expect(page.getByText('No entries in this view.')).toBeVisible();
   await page.getByRole('button', { name: 'This week', exact: true }).click();
   await expect(page.locator('tbody tr')).toHaveCount(9);
   await page.getByRole('button', { name: 'Log time', exact: true }).click();
@@ -138,7 +136,7 @@ test('backs up data, validates imports, and confirms before restoring', async ({
   await expect(page.getByText('Replace this workspace?')).toBeVisible();
   await expect(page.getByText('9 entries · 4 clients')).toBeVisible();
   await page.getByRole('button', { name: 'Replace and restore' }).click();
-  await expect(page.getByText('Great work deserves a record.')).toBeVisible();
+  await expect(page.getByText('No time logged yet.')).toBeVisible();
   await page.reload();
-  await expect(page.getByText('Great work deserves a record.')).toBeVisible();
+  await expect(page.getByText('No time logged yet.')).toBeVisible();
 });

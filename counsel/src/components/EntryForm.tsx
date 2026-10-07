@@ -1,40 +1,70 @@
 import { useState } from 'react';
-import { Check, Plus } from 'lucide-react';
-import { COLORS, EMPLOYEE, localDate, validateEntry } from '../model';
+import { Check, Plus, ShieldCheck } from 'lucide-react';
+import {
+  COLORS,
+  duration,
+  EMPLOYEE,
+  localDate,
+  shortDate,
+  validateEntry,
+} from '../model';
 import type { Client, Entry } from '../model';
+import { meaningfulChange } from '../review';
 import { Modal } from './Modal';
+import { Select } from './Select';
+import { DatePicker } from './DatePicker';
+export type EntryTemplate = Pick<
+  Entry,
+  'clientId' | 'minutes' | 'billable' | 'description'
+>;
 export function EntryForm({
   entry,
+  template,
   clients,
   onSave,
   onClose,
 }: {
   entry?: Entry;
+  /** Prefill a new entry (used by "Repeat yesterday"). */
+  template?: EntryTemplate;
   clients: Client[];
   onSave: (entry: Entry, client?: Client) => void;
   onClose: () => void;
 }) {
+  const source = entry ?? template;
   const [date, setDate] = useState(entry?.date ?? localDate());
   const [hours, setHours] = useState(
-    entry ? String(Math.floor(entry.minutes / 60)) : '',
+    source ? String(Math.floor(source.minutes / 60)) : '',
   );
   const [minutes, setMinutes] = useState(
-    entry ? String(entry.minutes % 60) : '',
+    source ? String(source.minutes % 60) : '',
   );
   const [clientId, setClientId] = useState(
-    entry?.clientId ?? clients[0]?.id ?? '__new',
+    source?.clientId ?? clients[0]?.id ?? '__new',
   );
   const [clientName, setClientName] = useState('');
-  const [description, setDescription] = useState(entry?.description ?? '');
-  const [billable, setBillable] = useState(true);
+  const [description, setDescription] = useState(source?.description ?? '');
+  // Start from the entry's own billability; only brand-new entries default to billable.
+  const [billable, setBillable] = useState(source?.billable ?? true);
   const [error, setError] = useState('');
+  const draft: Entry | undefined = entry && {
+    ...entry,
+    date,
+    minutes: Number(hours) * 60 + Number(minutes),
+    clientId,
+    billable,
+    description: cleanDescription(entry, description),
+  };
+  const changed = entry && draft ? changedFields(entry, draft, clients) : [];
   return (
     <Modal
-      title={entry ? 'Edit time entry' : 'Make your time count.'}
+      title={entry ? 'Edit entry' : template ? 'Repeat entry' : 'Log time'}
       subtitle={
         entry
-          ? 'Keep your record accurate and up to date.'
-          : 'Capture the work. We’ll take care of the totals.'
+          ? `${entry.employee} · ${shortDate(entry.date, { weekday: 'short', day: 'numeric', month: 'short' })}`
+          : template
+            ? 'Prefilled from your most recent day. Check the details before saving.'
+            : undefined
       }
       onClose={onClose}
     >
@@ -60,12 +90,13 @@ export function EntryForm({
               };
             }
             const next: Entry = {
+              ...(entry ?? {}),
               id: entry?.id ?? crypto.randomUUID(),
               date,
               minutes: Number(hours) * 60 + Number(minutes),
               clientId: client?.id ?? clientId,
               billable,
-              description: description.trim(),
+              description: cleanDescription(entry, description),
               employee: entry?.employee ?? EMPLOYEE,
             };
             validateEntry(next, client ? [...clients, client] : clients);
@@ -75,20 +106,22 @@ export function EntryForm({
           }
         }}
       >
-        <label className="field">
-          Client
-          <select
+        <div className="field">
+          <span id="entry-client-label">Client</span>
+          <Select
+            labelledBy="entry-client-label"
             value={clientId}
-            onChange={(e) => setClientId(e.target.value)}
-          >
-            {clients.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-            <option value="__new">+ Create a new client</option>
-          </select>
-        </label>
+            onChange={setClientId}
+            options={[
+              ...clients.map((c) => ({
+                value: c.id,
+                label: c.name,
+                color: c.color,
+              })),
+              { value: '__new', label: '+ Create a new client' },
+            ]}
+          />
+        </div>
         {clientId === '__new' && (
           <label className="field">
             New client name
@@ -103,17 +136,14 @@ export function EntryForm({
           </label>
         )}
         <div className="form-row">
-          <label className="field">
-            Date
-            <input
-              type="date"
-              min="1900-01-01"
-              max="9999-12-31"
-              required
+          <div className="field">
+            <span id="entry-date-label">Date</span>
+            <DatePicker
+              labelledBy="entry-date-label"
               value={date}
-              onChange={(e) => setDate(e.target.value)}
+              onChange={setDate}
             />
-          </label>
+          </div>
           <fieldset className="duration-field">
             <legend>Duration</legend>
             <div>
@@ -157,10 +187,10 @@ export function EntryForm({
           />
         </label>
         <label className="billable-control">
-          <div>
-            <strong>Billable time</strong>
+          <span>
+            <strong>Billable</strong>
             <span>Include this work in billable hours.</span>
-          </div>
+          </span>
           <input
             type="checkbox"
             checked={billable}
@@ -170,6 +200,35 @@ export function EntryForm({
             <Check size={12} />
           </span>
         </label>
+        {entry && (
+          <section className="change-summary" aria-label="Changes on save">
+            <div className="change-head">
+              <strong>What will be saved</strong>
+              <span>
+                {changed.length
+                  ? `${changed.length} ${changed.length === 1 ? 'change' : 'changes'}`
+                  : 'No changes'}
+              </span>
+            </div>
+            {changed.map((c) => (
+              <div className="change-row" key={c.label}>
+                <span>{c.label}</span>
+                <span>
+                  <s>{c.from || '—'}</s>
+                  <b>{c.to || '—'}</b>
+                </span>
+              </div>
+            ))}
+            <p className="change-note">
+              <ShieldCheck size={15} aria-hidden="true" />
+              {entry.reviewed
+                ? changed.length
+                  ? 'This entry was reviewed. Saving these changes returns it to review.'
+                  : 'Saving without changes keeps it reviewed.'
+                : 'This entry is waiting for review.'}
+            </p>
+          </section>
+        )}
         {error && (
           <p className="form-error" role="alert">
             {error}
@@ -180,11 +239,51 @@ export function EntryForm({
             Cancel
           </button>
           <button className="button primary" type="submit">
-            {entry ? <Check size={17} /> : <Plus size={17} />}{' '}
+            {entry ? <Check size={16} /> : <Plus size={16} />}{' '}
             {entry ? 'Save changes' : 'Save entry'}
           </button>
         </div>
       </form>
     </Modal>
   );
+}
+/** Trim typed text, but keep the stored value when only whitespace differs,
+ * so an unchanged save never counts as a correction. */
+function cleanDescription(entry: Entry | undefined, typed: string) {
+  const trimmed = typed.trim();
+  return entry && entry.description.trim() === trimmed
+    ? entry.description
+    : trimmed;
+}
+function changedFields(before: Entry, after: Entry, clients: Client[]) {
+  if (!meaningfulChange(before, after)) return [];
+  const name = (id: string) => clients.find((c) => c.id === id)?.name ?? '';
+  const rows: { label: string; from: string; to: string }[] = [];
+  if (before.description !== after.description)
+    rows.push({
+      label: 'Description',
+      from: before.description,
+      to: after.description,
+    });
+  if (before.clientId !== after.clientId)
+    rows.push({
+      label: 'Client',
+      from: name(before.clientId),
+      to: after.clientId === '__new' ? 'New client' : name(after.clientId),
+    });
+  if (before.date !== after.date)
+    rows.push({ label: 'Date', from: before.date, to: after.date });
+  if (before.minutes !== after.minutes)
+    rows.push({
+      label: 'Duration',
+      from: duration(before.minutes),
+      to: Number.isFinite(after.minutes) ? duration(after.minutes) : '',
+    });
+  if (before.billable !== after.billable)
+    rows.push({
+      label: 'Billing',
+      from: before.billable ? 'Billable' : 'Non-billable',
+      to: after.billable ? 'Billable' : 'Non-billable',
+    });
+  return rows;
 }

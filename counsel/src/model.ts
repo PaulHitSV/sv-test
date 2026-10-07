@@ -48,6 +48,15 @@ export function duration(minutes: number) {
     m = minutes % 60;
   return `${h}h${m ? ` ${String(m).padStart(2, '0')}m` : ''}`;
 }
+export function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter((part) => /^[\p{L}\p{N}]/u.test(part))
+    .map((s) => s[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
+}
 export function shortDate(
   date: string,
   options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' },

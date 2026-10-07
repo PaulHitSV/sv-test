@@ -47,6 +47,7 @@ export function Modal({
         <button
           className="icon-button"
           aria-label="Close dialog"
+          data-tip="Close"
           onClick={onClose}
         >
           <X size={20} />

@@ -1,5 +1,5 @@
 import { Pencil, Trash2 } from 'lucide-react';
-import { duration, localDate, shortDate, totals } from '../model';
+import { duration, initials, localDate, shortDate, totals } from '../model';
 import type { Client, Entry } from '../model';
 export function EntryTable({
   entries,
@@ -20,29 +20,28 @@ export function EntryTable({
       {dates.map((date) => (
         <section className="day-group" key={date}>
           <div className="day-heading">
-            <div>
+            <span>
               {shortDate(date, {
                 weekday: 'long',
                 day: 'numeric',
                 month: 'long',
               })}
-              {date === localDate() && <span>Today</span>}
-            </div>
+              {date === localDate() && <span className="today-tag">Today</span>}
+            </span>
             <strong>
               {duration(totals(entries.filter((e) => e.date === date)).total)}
             </strong>
           </div>
           <div className="table-wrap">
             <table>
-              <thead>
+              <thead className="sr-only">
                 <tr>
                   <th>Client / description</th>
                   <th>Team member</th>
-                  <th>Status</th>
-                  <th className="duration-cell">Duration</th>
-                  <th>
-                    <span className="sr-only">Actions</span>
-                  </th>
+                  <th>Billing</th>
+                  <th>Review</th>
+                  <th>Duration</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -54,7 +53,7 @@ export function EntryTable({
                     )!;
                     return (
                       <tr key={entry.id}>
-                        <td>
+                        <td className="client-cell">
                           <div className="entry-client">
                             <span
                               className="client-mark"
@@ -68,46 +67,50 @@ export function EntryTable({
                             </div>
                           </div>
                         </td>
-                        <td>
+                        <td className="member-col">
                           <span className="member-cell">
                             <span className="tiny-avatar">
-                              {entry.employee
-                                .split(' ')
-                                .map((s) => s[0])
-                                .slice(0, 2)
-                                .join('')}
+                              {initials(entry.employee)}
                             </span>
                             {entry.employee}
                           </span>
                         </td>
-                        <td>
+                        <td className="tag-col">
                           <span
-                            className={`status-tag ${entry.billable ? 'billable' : ''}`}
+                            className={`tag ${entry.billable ? 'billable' : ''}`}
                           >
-                            <i />
                             {entry.billable ? 'Billable' : 'Non-billable'}
                           </span>
                         </td>
-                        <td className="duration-cell">
-                          <strong>{duration(entry.minutes)}</strong>
+                        <td className="review-col">
+                          <span
+                            className={`review-text ${entry.reviewed ? 'done' : ''}`}
+                          >
+                            {entry.reviewed ? 'Reviewed' : 'In review'}
+                          </span>
                         </td>
-                        <td>
+                        <td className="duration-cell">
+                          {duration(entry.minutes)}
+                        </td>
+                        <td className="actions-cell">
                           <div className="row-actions">
                             <button
                               className="icon-button"
                               aria-label={`Edit ${client.name}: ${entry.description || 'time entry'}`}
+                              data-tip="Edit entry"
                               onClick={() => onEdit(entry)}
                               disabled={readOnly}
                             >
-                              <Pencil size={14} />
+                              <Pencil size={15} />
                             </button>
                             <button
                               className="icon-button delete-button"
                               aria-label={`Delete ${client.name}: ${entry.description || 'time entry'}`}
+                              data-tip="Delete entry"
                               onClick={() => onDelete(entry)}
                               disabled={readOnly}
                             >
-                              <Trash2 size={14} />
+                              <Trash2 size={15} />
                             </button>
                           </div>
                         </td>

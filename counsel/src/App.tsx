@@ -3,19 +3,19 @@ import {
   ArrowDownToLine,
   ArrowRight,
   BriefcaseBusiness,
-  CalendarDays,
-  ChartNoAxesColumnIncreasing,
   Check,
   ChevronLeft,
   ChevronRight,
   Clock3,
   Database,
-  FileText,
   HelpCircle,
+  Moon,
   MoreHorizontal,
   Plus,
+  Repeat2,
   Search,
   ShieldCheck,
+  Sun,
   Upload,
   X,
 } from 'lucide-react';
@@ -25,6 +25,8 @@ import {
   decodeData,
   download,
   duration,
+  EMPLOYEE,
+  initials,
   localDate,
   sampleData,
   shortDate,
@@ -34,27 +36,56 @@ import {
 } from './model';
 import type { Client, Data, Entry } from './model';
 import { useStore } from './useStore';
+import { useTheme } from './useTheme';
 import { Modal } from './components/Modal';
 import { EntryForm } from './components/EntryForm';
-
+import type { EntryTemplate } from './components/EntryForm';
 import { Sidebar } from './components/Sidebar';
 import type { Page } from './components/Sidebar';
 import { ClientForm } from './components/ClientForm';
 import { Stat } from './components/Stat';
-import { ReviewPage } from './components/ReviewPage';
-import { saveEntry } from './review';
+import { Select } from './components/Select';
+import { DatePicker } from './components/DatePicker';
+import { TooltipLayer } from './components/Tooltip';
+import { defaultReviewView, ReviewPage } from './components/ReviewPage';
+import { saveEntry, selectWeek } from './review';
+import { useSlidingIndicator } from './useSlidingIndicator';
+import type { ReviewFilters, UndoRecord } from './review';
 import pilotWorkspace from './fixtures/pilot-workspace.json';
 import { EntryTable } from './components/EntryTable';
 type Toast = { text: string; undo?: () => void };
+const PAGE_TITLES: Record<Page, string> = {
+  entries: 'Time entries',
+  review: 'Weekly review',
+  reports: 'Reports',
+  clients: 'Clients',
+};
+const latestWeek = (data: Data) =>
+  weekStart(
+    data.entries
+      .map((e) => e.date)
+      .sort()
+      .at(-1) ?? localDate(),
+  );
 export default function App() {
   const { data, save, error: storageError } = useStore();
+  const { theme, toggleTheme } = useTheme();
   const [page, setPage] = useState<Page>('entries');
   const [week, setWeek] = useState(weekStart(localDate()));
   const [range, setRange] = useState('week');
   const [search, setSearch] = useState('');
   const [clientFilter, setClientFilter] = useState('all');
   const [billing, setBilling] = useState('all');
+  // Review filters and the last review action live here so they survive
+  // moving between pages during the Friday close.
+  const [reviewView, setReviewView] = useState<ReviewFilters>(() =>
+    defaultReviewView(latestWeek(data)),
+  );
+  const [reviewOperation, setReviewOperation] = useState<UndoRecord | null>(
+    null,
+  );
   const [entryModal, setEntryModal] = useState<Entry | 'new' | null>(null);
+  const [template, setTemplate] = useState<EntryTemplate | undefined>();
   const [clientModal, setClientModal] = useState<Client | 'new' | null>(null);
   const [utilityModal, setUtilityModal] = useState<'help' | 'backup' | null>(
     null,
@@ -64,16 +95,19 @@ export default function App() {
   const [pendingRestore, setPendingRestore] = useState<Data | null>(null);
   const [utilityError, setUtilityError] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
+  const rangeThumb = useSlidingIndicator<HTMLDivElement>(`${page}|${range}`);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), toast.undo ? 12000 : 5000);
     return () => clearTimeout(t);
   }, [toast]);
   const end = addDays(week, 6);
-  const filtered = data.entries
+  const inPeriod = data.entries.filter(
+    (e) => range === 'all' || (e.date >= week && e.date <= end),
+  );
+  const filtered = inPeriod
     .filter(
       (e) =>
-        (range === 'all' || (e.date >= week && e.date <= end)) &&
         (clientFilter === 'all' || e.clientId === clientFilter) &&
         (billing === 'all' || e.billable === (billing === 'billable')) &&
         `${e.description} ${data.clients.find((c) => c.id === e.clientId)?.name ?? ''} ${e.employee}`
@@ -82,13 +116,31 @@ export default function App() {
     )
     .sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
   const summary = totals(filtered);
+  const periodSummary = totals(inPeriod);
+  const chartSource = page === 'reports' ? inPeriod : filtered;
   const dayTotals = Array.from({ length: 7 }, (_, i) => {
     const date = addDays(week, i);
-    return { date, ...totals(filtered.filter((e) => e.date === date)) };
+    return { date, ...totals(chartSource.filter((e) => e.date === date)) };
   });
-  const maxDay = Math.max(480, ...dayTotals.map((d) => d.total));
-  const activeClients = new Set(filtered.map((e) => e.clientId)).size;
+  const maxDay = Math.max(240, ...dayTotals.map((d) => d.total));
   const weekLabel = `${shortDate(week)} – ${shortDate(end, { day: 'numeric', month: 'short', year: 'numeric' })}`;
+  const reviewCount = selectWeek(data.entries, reviewView.week).filter(
+    (e) => !e.reviewed,
+  ).length;
+  const today = localDate();
+  const lastOwn = data.entries
+    .filter((e) => e.employee === EMPLOYEE && e.date < today)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .at(-1);
+  const repeatLabel = !lastOwn
+    ? 'Repeat yesterday'
+    : lastOwn.date === addDays(today, -1)
+      ? 'Repeat yesterday'
+      : `Repeat ${shortDate(lastOwn.date, { weekday: 'short', day: 'numeric', month: 'short' })}`;
+  function openNewEntry(from?: EntryTemplate) {
+    setTemplate(from);
+    setEntryModal('new');
+  }
   function exportCsv() {
     download(
       csv(filtered, data.clients),
@@ -116,171 +168,220 @@ export default function App() {
     );
     setToast({ text: 'Backup downloaded.' });
   }
+  function openBackup() {
+    setUtilityError('');
+    setUtilityModal('backup');
+  }
+  const periodToolbar = (
+    <div className="period-toolbar">
+      <div className="segmented" ref={rangeThumb.ref}>
+        <span
+          className={rangeThumb.className}
+          style={rangeThumb.style}
+          aria-hidden="true"
+        />
+        <button
+          className={range === 'week' ? 'selected' : ''}
+          aria-pressed={range === 'week'}
+          onClick={() => setRange('week')}
+        >
+          Week
+        </button>
+        <button
+          className={range === 'all' ? 'selected' : ''}
+          aria-pressed={range === 'all'}
+          onClick={() => setRange('all')}
+        >
+          All time
+        </button>
+      </div>
+      {range === 'week' && (
+        <div className="week-selector">
+          <button
+            className="icon-button"
+            aria-label="Previous week"
+            data-tip="Previous week"
+            onClick={() => setWeek(addDays(week, -7))}
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <DatePicker
+            mode="week"
+            label="Week"
+            value={week}
+            onChange={setWeek}
+          />
+          <button
+            className="icon-button"
+            aria-label="Next week"
+            data-tip="Next week"
+            onClick={() => setWeek(addDays(week, 7))}
+          >
+            <ChevronRight size={16} />
+          </button>
+        </div>
+      )}
+      {range === 'week' && week !== weekStart(localDate()) && (
+        <button
+          className="button secondary"
+          onClick={() => setWeek(weekStart(localDate()))}
+        >
+          This week
+        </button>
+      )}
+    </div>
+  );
+  const weekChart = (
+    <section className="panel week-chart" aria-label="Weekly activity">
+      <div className="chart-head">
+        <h2>Time by day</h2>
+        <div className="chart-legend">
+          <span>
+            <i className="billable-dot" />
+            Billable
+          </span>
+          <span>
+            <i />
+            Non-billable
+          </span>
+        </div>
+      </div>
+      <div className="chart-days">
+        {dayTotals.map((d) => (
+          <div
+            className={`chart-day ${d.date === today ? 'today' : ''}`}
+            key={d.date}
+            data-tip={`${shortDate(d.date, { weekday: 'short', day: 'numeric', month: 'short' })} · ${d.total ? `${duration(d.billable)} billable · ${duration(d.nonBillable)} non-billable` : 'no time logged'}`}
+            role="img"
+            aria-label={`${shortDate(d.date, { weekday: 'long', month: 'short', day: 'numeric' })}: ${duration(d.billable)} billable, ${duration(d.nonBillable)} non-billable`}
+          >
+            <span className="day-name">
+              {shortDate(d.date, { weekday: 'short' })}{' '}
+              {shortDate(d.date, { day: 'numeric' })}
+            </span>
+            <div className="bar-track">
+              <div
+                className="bar-stack"
+                style={{ height: `${(d.total / maxDay) * 100}%` }}
+              >
+                <div
+                  className="bar-nonbillable"
+                  style={{ flexGrow: d.nonBillable }}
+                />
+                <div
+                  className="bar-billable"
+                  style={{ flexGrow: d.billable }}
+                />
+              </div>
+            </div>
+            <span className="bar-total">
+              {d.total ? duration(d.total) : '—'}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
   return (
     <div className="app-shell">
       <Sidebar
         page={page}
         setPage={setPage}
-        onBackup={() => {
-          setUtilityError('');
-          setUtilityModal('backup');
-        }}
+        onBackup={openBackup}
         onHelp={() => setUtilityModal('help')}
+        reviewCount={reviewCount}
+        storageOk={!storageError}
       />
       <div className="main-shell">
         <header className="topbar">
-          <div>
+          <div className="crumbs">
             <span className="breadcrumb">Workspace</span>
-            <ChevronRight size={13} />
-            <span>
-              {page === 'entries'
-                ? 'Time entries'
-                : page === 'reports'
-                  ? 'Reports'
-                  : page === 'review'
-                    ? 'Weekly review'
-                    : 'Clients'}
-            </span>
+            <ChevronRight size={13} aria-hidden="true" />
+            <span>{PAGE_TITLES[page]}</span>
           </div>
           <div className="topbar-tools">
             <button
               className="icon-button"
+              aria-label={
+                theme === 'dark'
+                  ? 'Switch to light theme'
+                  : 'Switch to dark theme'
+              }
+              data-tip={theme === 'dark' ? 'Light theme' : 'Dark theme'}
+              onClick={toggleTheme}
+            >
+              {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+            <button
+              className="icon-button"
               aria-label="Manage data"
-              title="Manage data"
-              onClick={() => {
-                setUtilityError('');
-                setUtilityModal('backup');
-              }}
+              data-tip="Data & backups"
+              onClick={openBackup}
             >
               <Database size={16} />
             </button>
             <button
               className="icon-button"
               aria-label="Help"
-              title="Help"
+              data-tip="Help"
               onClick={() => setUtilityModal('help')}
             >
               <HelpCircle size={16} />
             </button>
-            <span className={`save-status ${storageError ? 'warning' : ''}`}>
-              <span />
-              {storageError ? 'Storage needs attention' : 'Local workspace'}
-            </span>
           </div>
         </header>
         <main>
           {storageError && (
             <div className="storage-error" role="alert">
               {storageError}
-              <button
-                className="text-button"
-                onClick={() => setUtilityModal('backup')}
-              >
+              <button className="text-button" onClick={openBackup}>
                 Manage data <ArrowRight size={15} />
               </button>
             </div>
           )}
-          <div className="page-heading">
-            <div>
-              <div className="eyebrow">
-                {page === 'entries'
-                  ? 'A LITTLE CLARITY FOR YOUR WORKDAY'
-                  : page === 'reports'
-                    ? 'THE BIGGER PICTURE'
-                    : page === 'review'
-                      ? 'A CONFIDENT CLOSE TO THE WEEK'
-                      : 'GOOD WORK STARTS WITH GOOD RELATIONSHIPS'}
-              </div>
-              <h1>
-                {page === 'entries'
-                  ? 'Time, well accounted for.'
-                  : page === 'reports'
-                    ? 'Every hour tells a story.'
-                    : page === 'review'
-                      ? 'Good work. Ready for review.'
-                      : 'Your clients.'}
-              </h1>
-              <p>
-                {page === 'entries'
-                  ? 'Less time tracking. More time on what matters.'
-                  : page === 'reports'
-                    ? 'A clear view of where your time goes.'
-                    : page === 'review'
-                      ? 'Bring the team’s time into focus before billing.'
-                      : 'One place for the people and businesses you work with.'}
-              </p>
-            </div>
-            <button
-              className="button primary"
-              onClick={() =>
-                page === 'clients'
-                  ? setClientModal('new')
-                  : setEntryModal('new')
-              }
-              disabled={!!storageError}
-            >
-              <Plus size={18} />
-              {page === 'clients' ? 'Add client' : 'Log time'}
-            </button>
-          </div>
           {page === 'review' ? (
             <ReviewPage
               data={data}
               save={save}
               onEdit={setEntryModal}
               readOnly={!!storageError}
+              view={reviewView}
+              setView={setReviewView}
+              operation={reviewOperation}
+              setOperation={setReviewOperation}
             />
-          ) : page !== 'clients' ? (
+          ) : page === 'entries' ? (
             <>
-              <div className="period-toolbar">
-                <div className="period-left">
-                  <div className="segmented">
-                    <button
-                      className={range === 'week' ? 'selected' : ''}
-                      onClick={() => setRange('week')}
-                    >
-                      Week
-                    </button>
-                    <button
-                      className={range === 'all' ? 'selected' : ''}
-                      onClick={() => setRange('all')}
-                    >
-                      All time
-                    </button>
-                  </div>
-                  {range === 'week' && (
-                    <div className="week-selector">
-                      <button
-                        className="icon-button"
-                        aria-label="Previous week"
-                        onClick={() => setWeek(addDays(week, -7))}
-                      >
-                        <ChevronLeft size={17} />
-                      </button>
-                      <span>
-                        <CalendarDays size={15} />
-                        {weekLabel}
-                      </span>
-                      <button
-                        className="icon-button"
-                        aria-label="Next week"
-                        onClick={() => setWeek(addDays(week, 7))}
-                      >
-                        <ChevronRight size={17} />
-                      </button>
-                    </div>
-                  )}
-                  {range === 'week' && week !== weekStart(localDate()) && (
-                    <button
-                      className="text-button"
-                      onClick={() => setWeek(weekStart(localDate()))}
-                    >
-                      This week
-                    </button>
-                  )}
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">
+                    {range === 'all' ? 'All time' : weekLabel}
+                  </span>
+                  <h1>Time entries</h1>
                 </div>
+                <div className="heading-actions">
+                  <button
+                    className="button secondary"
+                    disabled={!!storageError || !lastOwn}
+                    onClick={() => lastOwn && openNewEntry(lastOwn)}
+                  >
+                    <Repeat2 size={16} />
+                    {repeatLabel}
+                  </button>
+                  <button
+                    className="button primary"
+                    onClick={() => openNewEntry()}
+                    disabled={!!storageError}
+                  >
+                    <Plus size={16} />
+                    Log time
+                  </button>
+                </div>
+              </div>
+              <div className="toolbar-row">
+                {periodToolbar}
                 <button
-                  className="button secondary small"
+                  className="button secondary"
                   onClick={exportCsv}
                   disabled={!filtered.length}
                 >
@@ -292,118 +393,44 @@ export default function App() {
                 <Stat
                   label="Total time"
                   value={duration(summary.total)}
-                  detail={`${filtered.length} ${filtered.length === 1 ? 'entry' : 'entries'} recorded`}
-                  icon={<Clock3 size={17} />}
+                  detail={`${filtered.length} ${filtered.length === 1 ? 'entry' : 'entries'}`}
                 />
                 <Stat
                   label="Billable time"
                   value={duration(summary.billable)}
-                  detail="Time that works for you"
-                  icon={<BriefcaseBusiness size={17} />}
-                  tone="green"
+                  progress={summary.utilization}
                 />
                 <Stat
                   label="Non-billable time"
                   value={duration(summary.nonBillable)}
-                  detail="The work behind the work"
-                  icon={<FileText size={17} />}
+                  detail="Internal and relationship work"
                 />
                 <Stat
-                  label="Billable ratio"
-                  value={`${summary.utilization}%`}
-                  detail={
-                    summary.total
-                      ? 'Of your tracked time'
-                      : 'Log time to see your ratio'
+                  label="Awaiting review"
+                  value={
+                    <>
+                      {filtered.filter((e) => !e.reviewed).length}
+                      <small> of {filtered.length}</small>
+                    </>
                   }
-                  icon={<ChartNoAxesColumnIncreasing size={17} />}
-                  progress={summary.utilization}
+                  detail={
+                    <button
+                      className="text-button"
+                      onClick={() => setPage('review')}
+                    >
+                      Open weekly review <ArrowRight size={14} />
+                    </button>
+                  }
                 />
               </section>
-              {range === 'week' && (
-                <section className="weekly-card" aria-label="Weekly activity">
-                  <div className="weekly-intro">
-                    <div className="section-eyebrow">YOUR WEEK AT A GLANCE</div>
-                    <h2>A steady rhythm.</h2>
-                    <p>
-                      {summary.total
-                        ? `${duration(summary.total)} across ${activeClients} ${activeClients === 1 ? 'client' : 'clients'}.`
-                        : 'Make room for meaningful work.'}
-                      <br />
-                      {summary.total
-                        ? 'Every bit of progress adds up.'
-                        : 'Your time will take shape here.'}
-                    </p>
-                    <div className="chart-legend">
-                      <span>
-                        <i className="billable-dot" />
-                        Billable
-                      </span>
-                      <span>
-                        <i />
-                        Non-billable
-                      </span>
-                    </div>
-                  </div>
-                  <div className="week-chart">
-                    {dayTotals.map((d) => (
-                      <div
-                        className={`chart-day ${d.date === localDate() ? 'today' : ''}`}
-                        key={d.date}
-                        aria-label={`${shortDate(d.date, { weekday: 'long', month: 'short', day: 'numeric' })}: ${duration(d.billable)} billable, ${duration(d.nonBillable)} non-billable`}
-                      >
-                        <span className="bar-total">
-                          {d.total ? duration(d.total) : '—'}
-                        </span>
-                        <div className="bar-track">
-                          <div
-                            className="bar-stack"
-                            style={{ height: `${(d.total / maxDay) * 100}%` }}
-                          >
-                            <div
-                              className="bar-nonbillable"
-                              style={{ flex: d.nonBillable }}
-                            />
-                            <div
-                              className="bar-billable"
-                              style={{ flex: d.billable }}
-                            />
-                          </div>
-                        </div>
-                        <span className="day-name">
-                          {shortDate(d.date, { weekday: 'short' })}
-                          <b>{shortDate(d.date, { day: 'numeric' })}</b>
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              )}
-              <section className="entries-panel">
-                <div className="panel-title">
-                  <div>
-                    <h2>
-                      {page === 'reports' ? 'Time by client' : 'Time entries'}
-                      <span className="count">
-                        {page === 'reports' ? activeClients : filtered.length}
-                      </span>
-                    </h2>
-                    <p>
-                      {page === 'reports'
-                        ? 'Understand the work behind your numbers.'
-                        : 'All the details, in good order.'}
-                    </p>
-                  </div>
-                  {page === 'entries' && (
-                    <span className="subtle-label">Hours & minutes</span>
-                  )}
-                </div>
+              {range === 'week' && weekChart}
+              <section className="panel entries-panel">
                 <div className="filters">
                   <label className="search-field">
-                    <Search size={17} />
+                    <Search size={16} aria-hidden="true" />
                     <input
                       aria-label="Search entries"
-                      placeholder="Search clients or descriptions…"
+                      placeholder="Search clients, descriptions, people…"
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                     />
@@ -411,127 +438,86 @@ export default function App() {
                       <button
                         className="icon-button"
                         aria-label="Clear search"
+                        data-tip="Clear search"
                         onClick={() => setSearch('')}
                       >
                         <X size={14} />
                       </button>
                     )}
                   </label>
-                  <select
-                    aria-label="Filter by client"
+                  <Select
+                    label="Filter by client"
                     value={clientFilter}
-                    onChange={(e) => setClientFilter(e.target.value)}
-                  >
-                    <option value="all">All clients</option>
-                    {data.clients.map((c) => (
-                      <option value={c.id} key={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    aria-label="Filter by billability"
+                    onChange={setClientFilter}
+                    options={[
+                      { value: 'all', label: 'All clients' },
+                      ...data.clients.map((c) => ({
+                        value: c.id,
+                        label: c.name,
+                        color: c.color,
+                      })),
+                    ]}
+                  />
+                  <Select
+                    label="Filter by billability"
                     value={billing}
-                    onChange={(e) => setBilling(e.target.value)}
-                  >
-                    <option value="all">All billability</option>
-                    <option value="billable">Billable</option>
-                    <option value="non-billable">Non-billable</option>
-                  </select>
+                    onChange={setBilling}
+                    options={[
+                      { value: 'all', label: 'All billability' },
+                      { value: 'billable', label: 'Billable' },
+                      { value: 'non-billable', label: 'Non-billable' },
+                    ]}
+                  />
                 </div>
                 {!filtered.length ? (
                   <div className="empty-state">
-                    <div className="empty-icon">
-                      <Clock3 size={26} />
-                      <span>
-                        <Plus size={12} />
-                      </span>
-                    </div>
+                    <span className="empty-icon">
+                      <Clock3 size={20} />
+                    </span>
                     <h3>
                       {data.entries.length
-                        ? 'A little breathing room.'
-                        : 'Great work deserves a record.'}
+                        ? 'No entries in this view.'
+                        : 'No time logged yet.'}
                     </h3>
                     <p>
                       {data.entries.length
-                        ? 'No entries match this view. Try another week or adjust your filters.'
-                        : 'Log your first time entry and bring your workday into focus.'}
+                        ? 'Try another week or adjust your filters.'
+                        : 'Log your first entry, or open the pilot workspace from Data & backups.'}
                     </p>
-                    <button
-                      className="button primary"
-                      disabled={!!storageError}
-                      onClick={() => setEntryModal('new')}
-                    >
-                      <Plus size={16} />
-                      {data.entries.length
-                        ? 'Log time'
-                        : 'Log your first time entry'}
-                    </button>
-                    {!data.entries.length && !data.clients.length && (
+                    <div className="empty-actions">
                       <button
-                        className="text-button sample-button"
+                        className="button primary"
                         disabled={!!storageError}
-                        onClick={loadSample}
+                        onClick={() => openNewEntry()}
                       >
-                        Just exploring? Load a sample workspace{' '}
-                        <ArrowRight size={14} />
+                        <Plus size={16} />
+                        {data.entries.length
+                          ? 'Log time'
+                          : 'Log your first time entry'}
                       </button>
-                    )}
-                    {!!data.entries.length && (
-                      <button
-                        className="text-button sample-button"
-                        onClick={() => {
-                          setRange('all');
-                          setSearch('');
-                          setClientFilter('all');
-                          setBilling('all');
-                        }}
-                      >
-                        Show all entries <ArrowRight size={14} />
-                      </button>
-                    )}
-                  </div>
-                ) : page === 'reports' ? (
-                  <div className="report-list">
-                    {data.clients
-                      .map((client) => ({
-                        client,
-                        ...totals(
-                          filtered.filter((e) => e.clientId === client.id),
-                        ),
-                      }))
-                      .filter((c) => c.total)
-                      .sort((a, b) => b.total - a.total)
-                      .map((c) => (
-                        <div className="report-row" key={c.client.id}>
-                          <div className="report-client">
-                            <span
-                              className="client-monogram"
-                              style={{
-                                color: c.client.color,
-                                background: `${c.client.color}15`,
-                              }}
-                            >
-                              {c.client.name.slice(0, 1)}
-                            </span>
-                            <div>
-                              <strong>{c.client.name}</strong>
-                              <span>{c.utilization}% billable</span>
-                            </div>
-                          </div>
-                          <div className="report-meter">
-                            <div
-                              style={{
-                                width: `${(c.total / summary.total) * 100}%`,
-                              }}
-                            />
-                          </div>
-                          <div className="report-hours">
-                            <strong>{duration(c.total)}</strong>
-                            <span>{duration(c.billable)} billable</span>
-                          </div>
-                        </div>
-                      ))}
+                      {!data.entries.length && !data.clients.length && (
+                        <button
+                          className="button secondary"
+                          disabled={!!storageError}
+                          onClick={loadSample}
+                        >
+                          Load a sample workspace
+                        </button>
+                      )}
+                      {!!data.entries.length && (
+                        <button
+                          className="button secondary"
+                          onClick={() => {
+                            setRange('all');
+                            setSearch('');
+                            setClientFilter('all');
+                            setBilling('all');
+                          }}
+                        >
+                          Show all entries
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <EntryTable
@@ -556,111 +542,334 @@ export default function App() {
                 )}
               </section>
             </>
+          ) : page === 'reports' ? (
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">
+                    {range === 'all' ? 'All time' : weekLabel}
+                  </span>
+                  <h1>Reports</h1>
+                </div>
+              </div>
+              <div className="toolbar-row">{periodToolbar}</div>
+              <section className="stats" aria-label="Report summary">
+                <Stat
+                  label="Total time"
+                  value={duration(periodSummary.total)}
+                  detail={`${inPeriod.length} ${inPeriod.length === 1 ? 'entry' : 'entries'}`}
+                />
+                <Stat
+                  label="Billable"
+                  value={duration(periodSummary.billable)}
+                  progress={periodSummary.utilization}
+                />
+                <Stat
+                  label="Non-billable"
+                  value={duration(periodSummary.nonBillable)}
+                  detail="Internal and relationship work"
+                />
+                <Stat
+                  label="Ready for billing"
+                  tip="Billable time on entries that have been reviewed"
+                  value={duration(
+                    totals(inPeriod.filter((e) => e.reviewed)).billable,
+                  )}
+                  detail={`${inPeriod.filter((e) => e.reviewed).length} of ${inPeriod.length} reviewed`}
+                />
+              </section>
+              {!inPeriod.length ? (
+                <section className="panel empty-state">
+                  <span className="empty-icon">
+                    <Clock3 size={20} />
+                  </span>
+                  <h3>No time in this period.</h3>
+                  <p>Choose another week or switch to all time.</p>
+                </section>
+              ) : (
+                <>
+                  <div className="report-grid">
+                    {range === 'week' && weekChart}
+                    <section className="panel report-clients">
+                      <div className="chart-head">
+                        <h2>Time by client</h2>
+                      </div>
+                      <div className="report-list">
+                        {data.clients
+                          .map((client) => ({
+                            client,
+                            ...totals(
+                              inPeriod.filter((e) => e.clientId === client.id),
+                            ),
+                          }))
+                          .filter((c) => c.total)
+                          .sort((a, b) => b.total - a.total)
+                          .map((c) => (
+                            <div className="report-row" key={c.client.id}>
+                              <div className="report-label">
+                                <i style={{ background: c.client.color }} />
+                                <strong>{c.client.name}</strong>
+                                <span className="report-share">
+                                  {Math.round(
+                                    (c.total / periodSummary.total) * 100,
+                                  )}
+                                  %
+                                </span>
+                                <span className="report-billable">
+                                  {duration(c.billable)} billable
+                                </span>
+                                <span className="report-hours">
+                                  {duration(c.total)}
+                                </span>
+                              </div>
+                              <div
+                                className="report-meter"
+                                role="img"
+                                aria-label={`${duration(c.billable)} billable, ${duration(c.nonBillable)} non-billable`}
+                              >
+                                <i
+                                  style={{
+                                    width: `${(c.billable / periodSummary.total) * 100}%`,
+                                    background: c.client.color,
+                                  }}
+                                />
+                                <i
+                                  className="nb"
+                                  style={{
+                                    width: `${(c.nonBillable / periodSummary.total) * 100}%`,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    </section>
+                  </div>
+                  <section className="panel" aria-label="Time by team member">
+                    <div className="chart-head padded">
+                      <h2>Team</h2>
+                    </div>
+                    <div className="table-wrap">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Person</th>
+                            <th className="num-col">Time</th>
+                            <th className="num-col">Billable</th>
+                            <th>Billable ratio</th>
+                            <th className="num-col">Entries</th>
+                            <th>Review</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...new Set(inPeriod.map((e) => e.employee))]
+                            .sort()
+                            .map((person) => {
+                              const mine = inPeriod.filter(
+                                (e) => e.employee === person,
+                              );
+                              const t = totals(mine);
+                              const done = mine.filter(
+                                (e) => e.reviewed,
+                              ).length;
+                              return (
+                                <tr key={person}>
+                                  <td>
+                                    <span className="member-cell">
+                                      <span className="tiny-avatar">
+                                        {initials(person)}
+                                      </span>
+                                      {person}
+                                    </span>
+                                  </td>
+                                  <td className="num-col strong">
+                                    {duration(t.total)}
+                                  </td>
+                                  <td className="num-col">
+                                    {duration(t.billable)}
+                                  </td>
+                                  <td>
+                                    <span className="ratio">
+                                      <span className="meter">
+                                        <i
+                                          style={{ width: `${t.utilization}%` }}
+                                        />
+                                      </span>
+                                      {t.utilization}%
+                                    </span>
+                                  </td>
+                                  <td className="num-col">{mine.length}</td>
+                                  <td>
+                                    <span
+                                      className={`review-text ${done === mine.length ? 'done' : ''}`}
+                                    >
+                                      {done} of {mine.length} reviewed
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </>
+              )}
+            </>
           ) : (
             <>
-              <div className="clients-summary">
-                <BriefcaseBusiness size={18} />
-                <strong>{data.clients.length}</strong>{' '}
-                {data.clients.length === 1 ? 'client' : 'clients'} in your
-                workspace<span>All-time totals</span>
-              </div>
-              {!data.clients.length ? (
-                <div className="entries-panel empty-state">
-                  <div className="empty-icon">
-                    <BriefcaseBusiness size={26} />
-                  </div>
-                  <h3>Your next chapter starts here.</h3>
-                  <p>
-                    Add your first client. You can also create clients while
-                    logging time.
-                  </p>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">
+                    {data.clients.length}{' '}
+                    {data.clients.length === 1 ? 'client' : 'clients'} ·
+                    all-time totals
+                  </span>
+                  <h1>Clients</h1>
+                </div>
+                <div className="heading-actions">
                   <button
                     className="button primary"
                     onClick={() => setClientModal('new')}
                     disabled={!!storageError}
                   >
                     <Plus size={16} />
-                    Add a client
+                    Add client
                   </button>
                 </div>
+              </div>
+              {!data.clients.length ? (
+                <section className="panel empty-state">
+                  <span className="empty-icon">
+                    <BriefcaseBusiness size={20} />
+                  </span>
+                  <h3>No clients yet.</h3>
+                  <p>
+                    Add your first client. You can also create clients while
+                    logging time.
+                  </p>
+                  <div className="empty-actions">
+                    <button
+                      className="button primary"
+                      onClick={() => setClientModal('new')}
+                      disabled={!!storageError}
+                    >
+                      <Plus size={16} />
+                      Add a client
+                    </button>
+                  </div>
+                </section>
               ) : (
-                <div className="client-grid">
-                  {data.clients.map((client) => {
-                    const t = totals(
-                      data.entries.filter((e) => e.clientId === client.id),
-                    );
-                    return (
-                      <article className="client-card" key={client.id}>
-                        <div className="client-card-top">
-                          <span
-                            className="client-monogram"
-                            style={{
-                              color: client.color,
-                              background: `${client.color}18`,
-                            }}
-                          >
-                            {client.name.slice(0, 1)}
-                          </span>
-                          <button
-                            className="icon-button"
-                            aria-label={`Edit client ${client.name}`}
-                            onClick={() => setClientModal(client)}
-                            disabled={!!storageError}
-                          >
-                            <MoreHorizontal size={20} />
-                          </button>
-                        </div>
-                        <h2>{client.name}</h2>
-                        <p>
-                          {
-                            data.entries.filter((e) => e.clientId === client.id)
-                              .length
-                          }{' '}
-                          time entries
-                        </p>
-                        <div className="client-stats">
-                          <div>
-                            <span>Total time</span>
-                            <strong>{duration(t.total)}</strong>
-                          </div>
-                          <div>
-                            <span>Billable</span>
-                            <strong>{duration(t.billable)}</strong>
-                          </div>
-                        </div>
-                        <button
-                          className="text-button"
-                          onClick={() => {
-                            setClientFilter(client.id);
-                            setRange('all');
-                            setBilling('all');
-                            setSearch('');
-                            setPage('entries');
-                          }}
-                        >
-                          View entries <ArrowRight size={15} />
-                        </button>
-                      </article>
-                    );
-                  })}
-                </div>
+                <section className="panel" aria-label="Client list">
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Client</th>
+                          <th className="num-col">Time</th>
+                          <th>Billable share</th>
+                          <th className="num-col">Entries</th>
+                          <th>Review</th>
+                          <th>
+                            <span className="sr-only">Actions</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.clients.map((client) => {
+                          const mine = data.entries.filter(
+                            (e) => e.clientId === client.id,
+                          );
+                          const t = totals(mine);
+                          const open = mine.filter((e) => !e.reviewed).length;
+                          return (
+                            <tr key={client.id}>
+                              <td>
+                                <span className="client-name-cell">
+                                  <span
+                                    className="client-badge"
+                                    style={{ background: client.color }}
+                                    aria-hidden="true"
+                                  >
+                                    {initials(client.name)}
+                                  </span>
+                                  <h2>{client.name}</h2>
+                                </span>
+                              </td>
+                              <td className="num-col strong">
+                                {duration(t.total)}
+                              </td>
+                              <td>
+                                <span className="ratio">
+                                  <span className="meter">
+                                    <i
+                                      style={{
+                                        width: `${t.utilization}%`,
+                                        background: client.color,
+                                      }}
+                                    />
+                                  </span>
+                                  {t.utilization}%
+                                </span>
+                              </td>
+                              <td className="num-col">{mine.length}</td>
+                              <td>
+                                <span
+                                  className={`pill ${open ? 'warn' : 'ok'}`}
+                                >
+                                  {mine.length
+                                    ? open
+                                      ? `${open} to check`
+                                      : 'All reviewed'
+                                    : 'No entries'}
+                                </span>
+                              </td>
+                              <td>
+                                <div className="row-actions">
+                                  <button
+                                    className="text-button"
+                                    onClick={() => {
+                                      setClientFilter(client.id);
+                                      setRange('all');
+                                      setBilling('all');
+                                      setSearch('');
+                                      setPage('entries');
+                                    }}
+                                  >
+                                    View entries
+                                  </button>
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Edit client ${client.name}`}
+                                    data-tip="Edit client"
+                                    onClick={() => setClientModal(client)}
+                                    disabled={!!storageError}
+                                  >
+                                    <MoreHorizontal size={16} />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
               )}
             </>
           )}
-          <footer className="page-footer">
-            <span>
-              <span className="mini-brand">c.</span> A considered approach to
-              time.
-            </span>
-            <span>Made for the work that matters.</span>
-          </footer>
         </main>
       </div>
       {entryModal && (
         <EntryForm
           entry={entryModal === 'new' ? undefined : entryModal}
+          template={entryModal === 'new' ? template : undefined}
           clients={data.clients}
-          onClose={() => setEntryModal(null)}
+          onClose={() => {
+            setEntryModal(null);
+            setTemplate(undefined);
+          }}
           onSave={(entry, client) => {
             save(
               saveEntry(
@@ -671,11 +880,14 @@ export default function App() {
               ),
             );
             setEntryModal(null);
-            setWeek(weekStart(entry.date));
-            setRange('week');
-            setClientFilter('all');
-            setBilling('all');
-            setSearch('');
+            setTemplate(undefined);
+            if (page !== 'review') {
+              setWeek(weekStart(entry.date));
+              setRange('week');
+              setClientFilter('all');
+              setBilling('all');
+              setSearch('');
+            }
             setToast({
               text:
                 entryModal === 'new'
@@ -771,30 +983,32 @@ export default function App() {
       )}
       {utilityModal === 'help' && (
         <Modal
-          title="A little guidance."
-          subtitle="A calm place to keep track of your work."
+          title="Help"
+          subtitle="How Counsel works."
           onClose={() => setUtilityModal(null)}
         >
           <div className="help-content">
-            <h3>1. Capture your time</h3>
+            <h3>Capture your time</h3>
             <p>
               Choose a date and client, enter hours and minutes, and mark the
-              entry billable or non-billable. Descriptions are optional.
+              entry billable or non-billable. Use Repeat to start from your most
+              recent day.
             </p>
-            <h3>2. Find your focus</h3>
+            <h3>Weekly review</h3>
             <p>
-              Browse by week or all time. Search and filters update the entries,
-              chart, totals, and CSV export together. Reports shows time grouped
-              by client.
+              Filter by client, person or status. Totals and Export view always
+              match the rows in view. Selected rows are the only ones an action
+              changes; changing filters clears the selection. Correcting a
+              reviewed entry returns it to review.
             </p>
-            <h3>3. Keep a copy</h3>
+            <h3>Keep a copy</h3>
             <p>
-              Your records stay in this browser on this device. Use Manage your
-              data to download a backup and restore it later. Clearing browser
-              data removes these records.
+              Your records stay in this browser on this device. Use Data &
+              backups to download a backup and restore it later. Clearing
+              browser data removes these records.
             </p>
             <div className="help-note">
-              <ShieldCheck size={20} />
+              <ShieldCheck size={18} />
               <p>
                 This is a local assessment workspace with a mock profile. There
                 is no login, cloud sync, or server. Use fictional data when
@@ -806,7 +1020,7 @@ export default function App() {
       )}
       {utilityModal === 'backup' && (
         <Modal
-          title="Your data, in your hands."
+          title="Data & backups"
           subtitle="Back up your workspace or move it to another browser."
           onClose={() => {
             setUtilityModal(null);
@@ -814,24 +1028,8 @@ export default function App() {
           }}
         >
           <div className="backup-content">
-            <button
-              className="backup-option"
-              onClick={() => {
-                setPendingRestore(decodeData(JSON.stringify(pilotWorkspace)));
-                setUtilityError('');
-              }}
-            >
-              <BriefcaseBusiness size={21} />
-              <div>
-                <strong>Open pilot workspace</strong>
-                <span>
-                  Load the fictional Morgan & Partners review workspace
-                </span>
-              </div>
-              <ArrowRight size={17} />
-            </button>
             <div className="backup-summary">
-              <Database size={22} />
+              <Database size={20} />
               <div>
                 <strong>
                   {data.entries.length} entries · {data.clients.length} clients
@@ -841,15 +1039,31 @@ export default function App() {
             </div>
             <button
               className="backup-option"
+              onClick={() => {
+                setPendingRestore(decodeData(JSON.stringify(pilotWorkspace)));
+                setUtilityError('');
+              }}
+            >
+              <BriefcaseBusiness size={20} />
+              <div>
+                <strong>Open pilot workspace</strong>
+                <span>
+                  Load the fictional Morgan & Partners review workspace
+                </span>
+              </div>
+              <ArrowRight size={16} />
+            </button>
+            <button
+              className="backup-option"
               onClick={backup}
               disabled={!!storageError}
             >
-              <ArrowDownToLine size={21} />
+              <ArrowDownToLine size={20} />
               <div>
                 <strong>Download a backup</strong>
                 <span>All entries and clients, in a restorable JSON file</span>
               </div>
-              <ArrowRight size={17} />
+              <ArrowRight size={16} />
             </button>
             {storageError && (
               <button
@@ -866,7 +1080,7 @@ export default function App() {
                   }
                 }}
               >
-                <ArrowDownToLine size={21} />
+                <ArrowDownToLine size={20} />
                 <div>
                   <strong>Download original data</strong>
                   <span>Preserve the unreadable data before restoring</span>
@@ -877,12 +1091,12 @@ export default function App() {
               className="backup-option"
               onClick={() => fileInput.current?.click()}
             >
-              <Upload size={21} />
+              <Upload size={20} />
               <div>
                 <strong>Restore a backup</strong>
                 <span>Choose a Counsel JSON backup file</span>
               </div>
-              <ArrowRight size={17} />
+              <ArrowRight size={16} />
             </button>
             <input
               ref={fileInput}
@@ -934,14 +1148,10 @@ export default function App() {
                         setPendingRestore(null);
                         setUtilityModal(null);
                         setPage('entries');
-                        setWeek(
-                          weekStart(
-                            pendingRestore.entries
-                              .map((e) => e.date)
-                              .sort()
-                              .at(-1) ?? localDate(),
-                          ),
-                        );
+                        const latest = latestWeek(pendingRestore);
+                        setWeek(latest);
+                        setReviewView(defaultReviewView(latest));
+                        setReviewOperation(null);
                         setClientFilter('all');
                         setToast({ text: 'Workspace restored from backup.' });
                       } catch (e) {
@@ -961,19 +1171,21 @@ export default function App() {
           </div>
         </Modal>
       )}
+      <TooltipLayer />
       {toast && (
         <div className="toast" role="status">
           <span className="toast-icon">
-            <Check size={16} />
+            <Check size={14} />
           </span>
           <span>{toast.text}</span>
           {toast.undo && <button onClick={toast.undo}>Undo</button>}
           <button
             className="icon-button"
             aria-label="Dismiss notification"
+            data-tip="Dismiss"
             onClick={() => setToast(null)}
           >
-            <X size={16} />
+            <X size={15} />
           </button>
         </div>
       )}
